@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import json
 import os
+from pathlib import Path
 from subprocess import check_call
 import sys
 
@@ -19,6 +20,10 @@ def header_source(component):
     return "#include <{}.h>".format(component["name"])
 
 def initializer_source(component):
+    # If there is no initialization step, return an empty string.
+    if not "initializerArgs" in component:
+        return ""
+
     name = component["name"]
     args = ", ".join(component["initializeArgs"])
 
@@ -32,7 +37,7 @@ def runner_source(repo):
 
     return "    {}_run();".format(name)
 
-def kernel_source(components):
+def kernel_source(components, config):
     headers = map(header_source, components)
     initializers = map(initializer_source, components)
     runners = map(runner_source, components)
@@ -44,23 +49,31 @@ def kernel_source(components):
     source += "{\n"
     source += "\n".join(initializers) + "\n"
     source += "\n".join(runners) + "\n"
-    source += "}"
+    source += "}\n"
 
     return source
 
-def makefile_include_source(component):
-    return "-I {}/include".format(component["name"])
+def makefile_ldflags_source(component):
+    return "-l :{}.a".format(Path(tinker_repo_dir(component)).name)
 
-def makefile_source(components):
-    with open("data/Makefile.tinker.template", "r") as f:
+def makefile_include_source(component):
+    return "-I {}/include".format(tinker_repo_dir(component))
+
+def makefile_source(components, config, output_file):
+    dir_path = Path(__file__).parent
+    with Path(dir_path, "..", "data", "Makefile.tinker.template").open() as f:
         template = f.read()
 
     data = {
-        "os_name": "????",
+        "os_name": config["os_name"],
+        "default_target": config["default_target"],
+        "output_file": output_file,
+        "output_file_obj": str(Path(output_file).with_suffix(".o")),
+        "kernel_ldflags": " ".join(map(makefile_ldflags_source, components)),
         "includes": " ".join(map(makefile_include_source, components)),
     }
 
-    return template.format(data)
+    return template.format(**data)
 
 def try_split(string, separator, minimum_size, default=None):
     parts = string.split(separator)
@@ -78,6 +91,9 @@ def tinker_dir(folder=""):
 # ASSUMPTION: A directory with an @ symbol at the end won't break things.
 # ASSUMPTION: Nobody cares if they have a directory ending with @ in ./tinker/.
 def tinker_repo_dir(component):
+    if component["origin"][0] == "." or component["origin"][0] == "/":
+        return component["origin"]
+
     component_name = component["name"]
     _, branch = try_split(component["origin"], "#", 2, default="")
 
@@ -146,12 +162,13 @@ def main(argv=None):
     makefile_file = argv[3]
 
     with open(config_file, "r") as f:
-        raw_dependencies = json.load(f)
+        config = json.load(f)
+    raw_dependencies = config["dependencies"]
 
     dependencies = list(map(fetch_dependency, raw_dependencies))
 
     with open(output_file, "w") as f:
-        f.write(kernel_source(dependencies))
+        f.write(kernel_source(dependencies, config))
 
     print("Generated kernel with:")
     for dep in dependencies:
@@ -163,11 +180,11 @@ def main(argv=None):
     print("Output file: {}".format(output_file))
 
     with open(makefile_file, "w") as f:
-        f.write(makefile_source(dependencies))
+        f.write(makefile_source(dependencies, config, output_file))
 
     print("Makefile:    {}".format(makefile_file))
 
     return 0
 
-if __file__ == "__main__":
+if __name__ == "__main__":
     exit(main())

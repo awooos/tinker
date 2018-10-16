@@ -1,137 +1,120 @@
 NAME := {os_name}
-
+TARGET ?= {default_target}
 BUILD_TYPE ?= debug
 
-ISO_DIR  ?= iso/
-ISO_FILE ?= ${{ISO_DIR}}/${NAME}${NAME_SUFFIX}-${TARGET}-${BUILD_TYPE}.iso
+CC   := clang
+AS   := nasm
+AR   := ar
+LD   := ld
+QEMU ?= qemu-system-$(TARGET)
 
-override C_INCLUDES += {includes}
-
-override CFLAGS += -std=c11 -pedantic-errors -gdwarf-2 -nostdinc -ffreestanding -fno-stack-protector -fno-builtin -fdiagnostics-show-option -Wall -Wextra -Wpedantic -Wunused -Wformat=2 -Winit-self -Wmissing-include-dirs -Wstrict-overflow=4 -Wfloat-equal -Wwrite-strings -Wconversion -Wundef -Wtrigraphs -Wunused-parameter -Wunknown-pragmas -Wcast-align -Wswitch-enum -Waggregate-return -Wmissing-noreturn -Wmissing-format-attribute -Wpacked -Wredundant-decls -Wunreachable-code -Winline -Winvalid-pch -Wdisabled-optimization -Wsystem-headers -Wbad-function-cast -Wunused-function -Werror=implicit-function-declaration ${{C_INCLUDES}}
-
-override LDFLAGS += -nostdlib -g
-
+override CFLAGS += -std=c11 -pedantic-errors -gdwarf-2 -nostdinc     \
+					-ffreestanding -fno-stack-protector -fno-builtin \
+					-fdiagnostics-show-option -Werror -Weverything   \
+					-Wno-cast-qual -Wno-missing-prototypes -Wno-vla
+override LDFLAGS += -nostdlib -g --whole-archive
 override ASFLAGS +=
 
-# If config.mk doesn't exist, it triggers the corresponding rule.
-# If ${{TARGET}} is undefined, this triggers the "make/.mk" rule.
-#
-# Also, the LAST INCLUDED FILE is included first, because... reasons?
-#
-# Given that and config.mk needing to be loaded after ${{TARGET}}.mk,
-# (to allow config.mk to override defaults), we include it _before_
-# ${{TARGET}}.mk, so it's loaded afterwards.
-#
-# I hate Make so much.
-include make/despair.mk
-AWOO_MAKE_CONFIG ?= config.mk
-include ${{AWOO_MAKE_CONFIG}}
-include tinker/make/${{TARGET}}.mk
+C_INCLUDES := -I include $(patsubst %,-I %,$(wildcard tinker/*/include)) {includes}
 
-QEMU    ?= qemu-system-${{TARGET}}
+# NOTE: Includes go in reverse order, so config.mk overrides $(TARGET).mk.
+-include config.mk
+# If TARGET is not defined, this matches the make/.mk rule.
+include make/$(TARGET).mk
 
-ifeq (${{BUILD_TYPE}},test)
+ifeq ($(BUILD_TYPE),test)
 # 1. Don't reboot on exit.
 # 2. Add isa-debug-exit device, to allow to have qemu exit with a non-zero exit status.
 #
-# This combination allows us to do a clean shutdown and have qemu return a
-# zero status code, or do a non-clean shutdown (using isa-debug-exit) and
-# have qemu return a nonzero status code.
+# A normal shutdown results in qemu having a zero exit code, and using
+# isa-debug-exit results in a nonzero status code.
 override QEMU_FLAGS += -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04
 endif
 
-# Have src/kernel.exe use the target-specific linker script.
-KERNEL_EXE_LDFLAGS := -T src/link-${{TARGET}}.ld
-# Have src/kernel.exe link to the various libraries necessary.
-KERNEL_EXE_LIBRARIES += -l :tests.a -l :tinker.a -l :flail.a -l :hal-${{TARGET}}.a -l :dmm.a -l :flail.a -l :ali.a -l :greeter.a
+KERNEL_LDFLAGS := {kernel_ldflags}
 
+ALL_FILES := $(wildcard             \
+				tinker/*/src/*/     \
+				tinker/*/src/*/*/   \
+				tinker/*/platform-$(TARGET)/*/    \
+				tinker/*/platform-$(TARGET)/*/*/  \
+				libs/*/src/*    \
+				libs/*/src/*/*  \
+				libs/*/platform-$(TARGET)/* \
+				libs/*/platform-$(TARGET)/*/*/  \
+				src/*)
+SRCFILES := $(filter %.c,$(ALL_FILES)) $(filter %.asm,$(ALL_FILES))
+OBJFILES := $(patsubst %.asm, %.o, $(patsubst %.c, %.o, $(SRCFILES)))
 
-KERNEL_EXE_LIBRARIES += ${{KERNEL_EXE_LIBRARIES_APPEND}}
+# Any directory directly under tinker/ is treated as a library.
+LIBRARIES := $(patsubst %/,%.a,$(filter %/,$(wildcard tinker/*/ libs/*/)))
 
-# == Begin gross bullshit for only matching things for the current platform. ==
+# ISO_FILE is the final location of the generated ISO.
+ISO_DIR := iso
+ISO_FILENAME := $(NAME)$(NAME_SUFFIX)-$(TARGET)-$(BUILD_TYPE).iso
+ISO_FILE := $(ISO_DIR)/$(ISO_FILENAME)
 
-# We're searching for .c and .asm files.
-SOURCE_SUFFIXES := '(' -name '*.c' -o -name '*.asm' ')'
+all: iso
 
-# Ignore things that are target-specific.
-EXCLUDE_ALL_TARGET_DIRECTORIES := '(' '!' -wholename 'tinker/*/src/*/platform-*/*' ')'
-
-# src/libraries/bootstrap-${{TARGET}}, src/libraries/hal-${TARGET}, etc.
-INCLUDE_CURRENT_TARGET_DIRECTORIES := '(' -wholename 'tinker/*/src/*/platform-${{TARGET}}/*' ')'
-
-# == End gross bullshit for only matching things for the current platform.   ==
-
-SRCFILES := $(shell find 'src' ${{SOURCE_SUFFIXES}} '(' ${EXCLUDE_ALL_TARGET_DIRECTORIES} -o ${INCLUDE_CURRENT_TARGET_DIRECTORIES} ')')
-OBJFILES := $(patsubst %.asm, %.o, $(patsubst %.c, %.o, ${{SRCFILES}}))
-
-BUILDINFO := $(shell ./bin/generate_build_info.sh ${{BUILD_TYPE}} ${TARGET} ${TEST_SECTION} > ./include/awoo/build_info.h)
-
-all: src/kernel.exe
-
-# Make sure config.mk exists. This shouldn't be automated, so print an error.
-config.mk:
-	$(error Please copy config.mk.dist to config.mk and adjust it as needed)
-
-# This rule is triggered by "include make/${{TARGET}}.mk" if TARGET is undefined.
-# This shouldn't be automated, so print an error.
+# This rule is triggered by "include make/$(TARGET).mk" if TARGET
+# is undefined. This shouldn't be automated, so print an error.
 make/.mk:
 	$(error TARGET is undefined. Set it on the command line or in config.mk)
 
-%.o: %.c
-	${{CC}} ${CFLAGS} -c $< -o $@
+generated_headers:
+	mkdir -p include/awoo
+	./bin/generate_build_info.sh $(BUILD_TYPE) $(TARGET) > ./include/awoo/build_info.h
+
+%.o: %.c generated_headers
+	$(CC) $(CFLAGS) $(C_INCLUDES) -c $< -o $@
 
 %.o: %.asm
-	${{AS}} ${ASFLAGS} -o $@ $<
+	$(AS) $(ASFLAGS) -o $@ $<
 
-%.exe: libraries ${{OBJFILES}}
-	@# The various ${{$(call ...)}} things expand in such a way that if
-	@# this rule matches src/kernel.exe, it adds the following:
-	@#   ${{KERNEL_EXE_LDFLAGS}} ${KERNEL_EXE_TARGETS}
-	${{LD}} -o $@ -L src/modules -L src/libraries ${LDFLAGS} ${$(call rule_var,$@,LDFLAGS)} ${$(call rule_var,$@,TARGETS)} $(filter $*/%,$^) ${$(call rule_var,$@,LIBRARIES)}
+kernel.exe: $(OBJFILES) $(LIBRARIES)
+	$(LD) -o $@ $(LDFLAGS) -L tinker/ -L libs/ -T src/link-$(TARGET).ld src/0-start-$(TARGET).o {output_file_obj} $(KERNEL_LDFLAGS)
 
-%.a: ${{OBJFILES}}
-	${{AR}} rc $@ $(filter $*/%,$^)
-	${{RANLIB}} $@
+%.a: $(OBJFILES)
+	$(AR) rcs $@ $(filter $*/%,$^)
 
-# Any directory directly under src/libraries/ is treated as a library.
-libraries: $(shell find src/libraries -mindepth 1 -type d -exec printf "{{}}.a " \;)
-
-iso: src/kernel.exe libraries
-	mkdir -p ${{ISO_DIR}}
-	cp -r assets/isofs/ ./
-	mkdir -p isofs/system isofs/libraries
-	cp src/*.exe isofs/system
-	cp src/libraries/*.a isofs/libraries
-	${{MKISOFS}} -boot-info-table -R -b boot/grub/stage2_eltorito -no-emul-boot -boot-load-size 4 -input-charset utf-8 -o ${ISO_FILE} isofs
+iso: $(ISO_FILE)
+$(ISO_FILE): kernel.exe
+	@mkdir -p iso
+	@cp -r assets/isofs/ ./
+	@cp kernel.exe isofs/
+	xorriso -report_about HINT -abort_on WARNING -as mkisofs -quiet -boot-info-table -R -b boot/grub/stage2_eltorito -no-emul-boot -boot-load-size 4 -input-charset utf-8 -o $(ISO_FILE) isofs
 
 test: lint
-	$(MAKE) BUILD_TYPE=test qemu
+	@$(MAKE) BUILD_TYPE=test qemu
 
-lint:
-	clang-check $(shell find -name '*.c') -- ${{C_INCLUDES}}
+lint: generated_headers
+	clang-check $(filter %.c,$(SRCFILES)) -- $(C_INCLUDES)
 
 qemu: iso
-	${{QEMU}} ${QEMU_FLAGS} -vga std -serial stdio -cdrom ${ISO_FILE}
+	$(QEMU) $(QEMU_FLAGS) -vga std -serial stdio -cdrom $(ISO_FILE)
 
 qemu-monitor: iso
-	${{QEMU}} ${QEMU_FLAGS} -monitor stdio -cdrom ${ISO_FILE}
+	$(QEMU) $(QEMU_FLAGS) -monitor stdio -cdrom $(ISO_FILE)
 
-bochs: iso
-	cd iso && ${{BOCHS}} -q -f bochsrc-${TARGET}.txt
+# Fetch all submodules.
+fetch-submodules:
+	git submodule update --recursive --init
 
-vbox: iso
-	VirtualBox --startvm ${{NAME}} --debug-statistics --debug-command-line --start-running
+# Update to the latest available versions of all submodules.
+update-submodules:
+	git submodule update --recursive --remote --init
+
+docs:
+	doxygen doxygen.conf
 
 clean:
+	@rm -rf docs/
+	@rm -f $(OBJFILES) $(LIBRARIES) $(EXECUTABLES)
 	@rm -rf ./isofs
-	@find ./src -name '*.o'   -delete
-	@find ./src -name '*.a'   -delete
-	@find ./src -name '*.lib' -delete
-	@find ./src -name '*.exe' -delete
-	@find ./src -name '*.d'   -delete
-	@find ./iso -name '*.iso' -delete
+	@rm -f $(ISO_DIR)/*.iso
+	@rm -f include/awoo/build_info.h
 
-.PHONY: all iso libraries modules clean test qemu qemu-monitor clean dockerhub-release
+.PHONY: all iso clean test qemu qemu-monitor clean fetch-submodules update-submodules generated_headers docs
 
 # Don't auto-delete .o files.
-.SECONDARY: ${{OBJFILES}}
+.SECONDARY: $(OBJFILES)
