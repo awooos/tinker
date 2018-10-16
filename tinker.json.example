@@ -3,27 +3,27 @@
   "default_target": "i386",
   "dependencies": [
     {
-      "name": "hal",
-      "origin": "./libs/hal",
-      "initializeArgs": [],
+      "name": "flail",
+      "origin": "https://github.com/awooos/flail.git#master",
+      "initializeArgs": ["\"tinker-generated kernel\"", "&print"],
       "run": false
     },
     {
       "name": "dmm",
       "origin": "https://github.com/awooos/dmm.git#master",
-      "initializeArgs": [],
+      "initializeArgs": ["&_flail_panic"],
       "run": false
     },
     {
       "name": "ali",
       "origin": "https://github.com/awooos/ali.git#master",
-      "initializeArgs": ["&dmm_malloc", "&dmm_free", "&dmm_realloc"],
+      "initializeArgs": ["&_dmm_malloc", "&_dmm_free", "&_dmm_realloc"],
       "run": false
     },
     {
-      "name": "flail",
-      "origin": "https://github.com/awooos/flail.git#master",
-      "initializeArgs": ["\"tinker-generated kernel\"", "&print"],
+      "name": "hal",
+      "origin": "./libs/hal",
+      "initializeArgs": [],
       "run": false
     },
     {

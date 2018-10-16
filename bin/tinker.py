@@ -21,7 +21,7 @@ def header_source(component):
 
 def initializer_source(component):
     # If there is no initialization step, return an empty string.
-    if not "initializerArgs" in component:
+    if "initialize" in component and component["initialize"] == False:
         return ""
 
     name = component["name"]
