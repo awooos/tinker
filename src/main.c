@@ -90,7 +90,7 @@ char *tinker_uint_to_str(unsigned long n)
 /// @private
 void tinker_print(const char *string)
 {
-    for (char *s = (char*)string; *s; s++) {
+    for (const char *s = string; *s; s++) {
         tinker_putchar(*s);
     }
 }
